@@ -1,0 +1,45 @@
+{
+	"geode": "5.0.0",
+	"gd": {
+		"win": "2.2081"
+	},
+	"id": "yourname.gravity-screen-flip",
+	"name": "Gravity Screen Flip",
+	"version": "v1.0.0",
+	"developer": "YourName",
+	"description": "Rotates the gameplay view 180 degrees whenever gravity is reversed.",
+	"settings": {
+		"enabled": {
+			"type": "bool",
+			"name": "Enabled",
+			"description": "Rotate the gameplay view when gravity is reversed.",
+			"default": true
+		},
+		"duration": {
+			"type": "float",
+			"name": "Rotation Duration",
+			"description": "How long the rotation takes, in seconds. Set to 0 for an instant flip.",
+			"default": 0.3,
+			"min": 0.0,
+			"max": 1.5
+		},
+		"continuous-spin": {
+			"type": "bool",
+			"name": "Keep Spinning Same Direction",
+			"description": "Every gravity change rotates a further 180 degrees clockwise instead of rotating back and forth.",
+			"default": false
+		},
+		"cover-edges": {
+			"type": "bool",
+			"name": "Zoom to Hide Edges",
+			"description": "Briefly zoom in during the rotation so the screen corners never show empty space.",
+			"default": true
+		},
+		"upright-hud": {
+			"type": "bool",
+			"name": "Keep HUD Upright",
+			"description": "Counter-rotate the in-level UI layer so it is not turned upside down (only works if the UI layer is a child of the play layer).",
+			"default": true
+		}
+	}
+}
