@@ -1,17 +1,5 @@
 // Gravity Screen Flip
 // Rotates the whole gameplay view by 180 degrees while player 1 is upside down.
-//
-// Design notes:
-//  * Only PlayLayer is hooked. The menus, the editor (LevelEditorLayer) and the
-//    pause menu are different nodes, so they are never touched.
-//  * Gravity is *polled* from PlayerObject::m_isUpsideDown every frame instead of
-//    hooking the portal. That also covers checkpoints, respawns, mirror/other
-//    gravity sources and repeated flips without any extra bookkeeping.
-//  * The rotation is applied to the PlayLayer node itself, around the centre of
-//    the screen, from a single place (after PlayLayer::update). Position,
-//    rotation and scale are all recomputed from one angle each frame, so no
-//    CCActions fight each other and nothing is ever visible in a half-updated
-//    state, which avoids flicker.
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
@@ -32,30 +20,31 @@ namespace {
 
 class $modify(GSFPlayLayer, PlayLayer) {
     struct Fields {
-        float angle = 0.f;        // angle currently applied (degrees, clockwise)
-        float startAngle = 0.f;   // angle when the current animation started
-        float targetAngle = 0.f;  // angle the animation is heading to
-        float elapsed = 0.f;      // seconds into the current animation
-        bool  flipped = false;    // last observed gravity state of player 1
-        bool  dirty = false;      // true while a non-identity transform is applied
+        float angle = 0.f;
+        float startAngle = 0.f;
+        float targetAngle = 0.f;
+        float elapsed = 0.f;
+        bool  flipped = false;
+        bool  dirty = false;
         bool  anchorWarned = false;
+        bool  loggedFirst = false;
     };
 
-    // ---- hooks -----------------------------------------------------------
-
-    void update(float dt) {
-        PlayLayer::update(dt);
-        this->gsfTick();
+    void setupHasCompleted() {
+        PlayLayer::setupHasCompleted();
+        // Our own per-frame callback, independent of any update hook.
+        this->schedule(schedule_selector(GSFPlayLayer::gsfFrame));
+        log::info("Gravity Screen Flip: attached to PlayLayer");
     }
 
     void resetLevel() {
         PlayLayer::resetLevel();
-        // Respawning should never play a spin animation: jump straight to the
-        // correct orientation for the restored player state.
         this->gsfSnap();
     }
 
-    // ---- helpers ---------------------------------------------------------
+    void gsfFrame(float) {
+        this->gsfTick();
+    }
 
     void gsfSnap() {
         auto f = m_fields.self();
@@ -71,6 +60,11 @@ class $modify(GSFPlayLayer, PlayLayer) {
     void gsfTick() {
         auto f = m_fields.self();
 
+        if (!f->loggedFirst) {
+            f->loggedFirst = true;
+            log::info("Gravity Screen Flip: first frame tick running");
+        }
+
         if (!Mod::get()->getSettingValue<bool>("enabled")) {
             if (f->dirty) {
                 f->angle = f->startAngle = f->targetAngle = 0.f;
@@ -84,7 +78,6 @@ class $modify(GSFPlayLayer, PlayLayer) {
         float duration = static_cast<float>(Mod::get()->getSettingValue<double>("duration"));
         bool continuous = Mod::get()->getSettingValue<bool>("continuous-spin");
 
-        // Detect a gravity change (works for any number of changes per level).
         bool flipped = m_player1->m_isUpsideDown;
         if (flipped != f->flipped) {
             f->flipped = flipped;
@@ -92,9 +85,9 @@ class $modify(GSFPlayLayer, PlayLayer) {
             f->targetAngle = continuous ? f->targetAngle + 180.f
                                         : (flipped ? 180.f : 0.f);
             f->elapsed = 0.f;
+            log::info("Gravity Screen Flip: gravity changed, upside down = {}", flipped);
         }
 
-        // Advance the animation using real frame time (independent of game speed).
         if (f->angle != f->targetAngle) {
             if (duration <= 0.001f) {
                 f->angle = f->targetAngle;
@@ -111,16 +104,13 @@ class $modify(GSFPlayLayer, PlayLayer) {
         }
     }
 
-    // Applies an angle (degrees, clockwise) as rotation about the screen centre.
     void gsfApply(float angle) {
         auto f = m_fields.self();
 
-        // Rotation about the node origin is only equivalent to rotation about the
-        // screen centre when the layer ignores its anchor point (CCLayer default).
         if (!this->isIgnoreAnchorPointForPosition()) {
             if (!f->anchorWarned) {
                 f->anchorWarned = true;
-                log::warn("PlayLayer does not ignore its anchor point; skipping rotation");
+                log::warn("Gravity Screen Flip: PlayLayer does not ignore its anchor point; skipping rotation");
             }
             return;
         }
@@ -150,15 +140,12 @@ class $modify(GSFPlayLayer, PlayLayer) {
         float rad = angle * kPi / 180.f;
         float c = std::cos(rad), s = std::sin(rad);
 
-        // Scale needed so a rotated W x H rectangle still covers the whole screen.
         float scale = 1.f;
         if (Mod::get()->getSettingValue<bool>("cover-edges")) {
             float a = std::fmod(std::fabs(angle), 180.f) * kPi / 180.f;
             scale = std::fabs(std::cos(a)) + (W / H) * std::fabs(std::sin(a));
         }
 
-        // Cocos rotation is clockwise: R(x, y) = (x*c + y*s, -x*s + y*c).
-        // Choose position so that the screen centre maps to itself.
         float px = cx - scale * (cx * c + cy * s);
         float py = cy - scale * (-cx * s + cy * c);
 
@@ -167,8 +154,6 @@ class $modify(GSFPlayLayer, PlayLayer) {
         this->setPosition({px, py});
 
         if (hud) {
-            // Child transform = inverse of the parent's, so the HUD is drawn
-            // exactly where it would be with no rotation at all.
             float inv = 1.f / scale;
             ui->setRotation(-angle);
             ui->setScale(inv);
