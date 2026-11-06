@@ -1,8 +1,9 @@
 // Gravity Screen Flip
-// Rotates the whole gameplay view by 180 degrees while player 1 is upside down.
+// Adds 180 degrees to the game's own camera angle while player 1 is upside down.
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/GJBaseGameLayer.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +11,16 @@
 using namespace geode::prelude;
 
 namespace {
-    constexpr float kPi = 3.14159265358979323846f;
+    struct State {
+        float angle = 0.f;       // extra camera angle currently applied (degrees)
+        float startAngle = 0.f;
+        float targetAngle = 0.f;
+        float elapsed = 0.f;
+        bool  flipped = false;
+        bool  loggedTick = false;
+        bool  loggedCamera = false;
+    };
+    State g;
 
     float easeInOutCubic(float t) {
         return t < 0.5f ? 4.f * t * t * t
@@ -19,58 +29,34 @@ namespace {
 }
 
 class $modify(GSFPlayLayer, PlayLayer) {
-    struct Fields {
-        float angle = 0.f;
-        float startAngle = 0.f;
-        float targetAngle = 0.f;
-        float elapsed = 0.f;
-        bool  flipped = false;
-        bool  dirty = false;
-        bool  anchorWarned = false;
-        bool  loggedFirst = false;
-    };
-
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
-        // Our own per-frame callback, independent of any update hook.
+        g = State{};
         this->schedule(schedule_selector(GSFPlayLayer::gsfFrame));
         log::info("Gravity Screen Flip: attached to PlayLayer");
     }
 
     void resetLevel() {
         PlayLayer::resetLevel();
-        this->gsfSnap();
+        // Respawn: jump straight to the right orientation, no spin.
+        if (m_player1) {
+            bool enabled = Mod::get()->getSettingValue<bool>("enabled");
+            g.flipped = m_player1->m_isUpsideDown;
+            float a = (enabled && g.flipped) ? 180.f : 0.f;
+            g.angle = g.startAngle = g.targetAngle = a;
+            g.elapsed = 0.f;
+        }
     }
 
     void gsfFrame(float) {
-        this->gsfTick();
-    }
-
-    void gsfSnap() {
-        auto f = m_fields.self();
-        if (!m_player1) return;
-        bool enabled = Mod::get()->getSettingValue<bool>("enabled");
-        f->flipped = m_player1->m_isUpsideDown;
-        float a = (enabled && f->flipped) ? 180.f : 0.f;
-        f->angle = f->startAngle = f->targetAngle = a;
-        f->elapsed = 0.f;
-        this->gsfApply(a);
-    }
-
-    void gsfTick() {
-        auto f = m_fields.self();
-
-        if (!f->loggedFirst) {
-            f->loggedFirst = true;
+        if (!g.loggedTick) {
+            g.loggedTick = true;
             log::info("Gravity Screen Flip: first frame tick running");
         }
 
         if (!Mod::get()->getSettingValue<bool>("enabled")) {
-            if (f->dirty) {
-                f->angle = f->startAngle = f->targetAngle = 0.f;
-                this->gsfApply(0.f);
-            }
-            if (m_player1) f->flipped = m_player1->m_isUpsideDown;
+            g.angle = g.startAngle = g.targetAngle = 0.f;
+            if (m_player1) g.flipped = m_player1->m_isUpsideDown;
             return;
         }
         if (!m_player1) return;
@@ -79,86 +65,47 @@ class $modify(GSFPlayLayer, PlayLayer) {
         bool continuous = Mod::get()->getSettingValue<bool>("continuous-spin");
 
         bool flipped = m_player1->m_isUpsideDown;
-        if (flipped != f->flipped) {
-            f->flipped = flipped;
-            f->startAngle = f->angle;
-            f->targetAngle = continuous ? f->targetAngle + 180.f
-                                        : (flipped ? 180.f : 0.f);
-            f->elapsed = 0.f;
+        if (flipped != g.flipped) {
+            g.flipped = flipped;
+            g.startAngle = g.angle;
+            g.targetAngle = continuous ? g.targetAngle + 180.f
+                                       : (flipped ? 180.f : 0.f);
+            g.elapsed = 0.f;
             log::info("Gravity Screen Flip: gravity changed, upside down = {}", flipped);
         }
 
-        if (f->angle != f->targetAngle) {
+        if (g.angle != g.targetAngle) {
             if (duration <= 0.001f) {
-                f->angle = f->targetAngle;
+                g.angle = g.targetAngle;
             } else {
-                f->elapsed += CCDirector::get()->getDeltaTime();
-                float t = std::min(f->elapsed / duration, 1.f);
-                f->angle = f->startAngle + (f->targetAngle - f->startAngle) * easeInOutCubic(t);
-                if (t >= 1.f) f->angle = f->targetAngle;
+                g.elapsed += CCDirector::get()->getDeltaTime();
+                float t = std::min(g.elapsed / duration, 1.f);
+                g.angle = g.startAngle + (g.targetAngle - g.startAngle) * easeInOutCubic(t);
+                if (t >= 1.f) g.angle = g.targetAngle;
             }
-        }
-
-        if (f->angle != 0.f || f->dirty) {
-            this->gsfApply(f->angle);
         }
     }
+};
 
-    void gsfApply(float angle) {
-        auto f = m_fields.self();
+class $modify(GSFBaseGameLayer, GJBaseGameLayer) {
+    void updateCamera(float dt) {
+        // Only act inside a real level, never in the editor.
+        bool inLevel = static_cast<GJBaseGameLayer*>(PlayLayer::get())
+                       == static_cast<GJBaseGameLayer*>(this);
 
-        if (!this->isIgnoreAnchorPointForPosition()) {
-            if (!f->anchorWarned) {
-                f->anchorWarned = true;
-                log::warn("Gravity Screen Flip: PlayLayer does not ignore its anchor point; skipping rotation");
-            }
+        if (!inLevel || g.angle == 0.f) {
+            GJBaseGameLayer::updateCamera(dt);
             return;
         }
 
-        UILayer* ui = m_uiLayer;
-        bool hud = Mod::get()->getSettingValue<bool>("upright-hud")
-                   && ui && ui->getParent() == this;
-
-        bool identity = std::fabs(std::remainder(angle, 360.f)) < 0.001f;
-        if (identity) {
-            this->setRotation(0.f);
-            this->setScale(1.f);
-            this->setPosition({0.f, 0.f});
-            if (hud) {
-                ui->setRotation(0.f);
-                ui->setScale(1.f);
-                ui->setPosition({0.f, 0.f});
-            }
-            f->dirty = false;
-            return;
+        if (!g.loggedCamera) {
+            g.loggedCamera = true;
+            log::info("Gravity Screen Flip: applying camera angle {}", g.angle);
         }
 
-        auto win = CCDirector::get()->getWinSize();
-        float W = win.width, H = win.height;
-        float cx = W / 2.f, cy = H / 2.f;
-
-        float rad = angle * kPi / 180.f;
-        float c = std::cos(rad), s = std::sin(rad);
-
-        float scale = 1.f;
-        if (Mod::get()->getSettingValue<bool>("cover-edges")) {
-            float a = std::fmod(std::fabs(angle), 180.f) * kPi / 180.f;
-            scale = std::fabs(std::cos(a)) + (W / H) * std::fabs(std::sin(a));
-        }
-
-        float px = cx - scale * (cx * c + cy * s);
-        float py = cy - scale * (-cx * s + cy * c);
-
-        this->setRotation(angle);
-        this->setScale(scale);
-        this->setPosition({px, py});
-
-        if (hud) {
-            float inv = 1.f / scale;
-            ui->setRotation(-angle);
-            ui->setScale(inv);
-            ui->setPosition({-inv * (px * c - py * s), -inv * (px * s + py * c)});
-        }
-        f->dirty = true;
+        float original = m_gameState.m_cameraAngle;
+        m_gameState.m_cameraAngle = original + g.angle;
+        GJBaseGameLayer::updateCamera(dt);
+        m_gameState.m_cameraAngle = original;
     }
 };
